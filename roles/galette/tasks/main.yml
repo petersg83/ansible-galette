@@ -1,0 +1,85 @@
+- name: set galette version
+  set_fact:
+    galette_version: 0.9.2.1
+
+- name: install packages
+  apt: pkg={{ item }}
+  with_items:
+    - apache2
+    - libapache2-mod-php
+    - mysql-server
+    - php-curl
+    - php-db
+    - php-gd
+    - php-gettext
+    - php-mysql
+    - php-tidy
+    - php-intl
+    - python-mysqldb  # for ansible module mysql_user
+
+- include: ../../../shared/project-account.yml user=galette
+
+- name: enable rewrite module on apache2
+  apache2_module:
+    state: present
+    name: rewrite
+  notify: restart apache
+
+# install galette manually in /data/project/galette/galette
+- name: check if galette was installed
+  stat:
+    path: /data/project/galette/galette
+  register: p
+
+- name: download galette
+  get_url:
+    url: http://download.tuxfamily.org/galette/galette-{{ galette_version }}.tar.bz2
+    dest: /data/project/galette/galette-{{ galette_version }}.tar.bz2
+    sha256sum: d1fb7b75d045574d7fdff6416c1ac543ef3d30280e086fc970e141f4e051281a
+  become: yes
+  become_user: galette
+  when: not (p.stat.isdir is defined and p.stat.isdir)
+
+- name: extract galette
+  unarchive:
+    creates: /data/project/galette/galette-{{ galette_version }}
+    src: /data/project/galette/galette-{{ galette_version }}.tar.bz2
+    dest: /data/project/galette/
+    remote_src: yes
+  become: yes
+  become_user: galette
+
+- name: change ownership
+  file:
+    path: /data/project/galette/galette-{{ galette_version }}/galette/{{ item }}
+    owner: www-data
+    group: www-data
+    state: directory
+    recurse: yes
+  with_items:
+    - config
+    - data
+
+- name: create mysql user
+  mysql_user:
+    name: galette
+    password: "{{ lookup('password', 'credentials/galette/' + inventory_hostname) }}"
+    priv: "galette.*:ALL"
+
+- name: create mysql db
+  mysql_db:
+    name: galette
+    state: present
+
+- name: copy apache config
+  template:
+    src: apache.site
+    dest: "/etc/apache2/sites-available/galette.conf"
+  notify: restart apache
+
+- name: enable apache site
+  file:
+    src: "/etc/apache2/sites-available/galette.conf"
+    dest: "/etc/apache2/sites-enabled/galette.conf"
+    state: link
+  notify: restart apache
